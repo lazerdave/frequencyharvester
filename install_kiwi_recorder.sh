@@ -211,6 +211,13 @@ install_system_dependencies() {
     PKG_MANAGER=$(detect_package_manager)
     log_info "Detected package manager: ${PKG_MANAGER}"
 
+    # Detect if running on Asahi Linux (Fedora-based but different repos)
+    IS_ASAHI=false
+    if [[ -f /etc/os-release ]] && grep -qi "asahi" /etc/os-release; then
+        IS_ASAHI=true
+        log_info "Detected Asahi Linux variant"
+    fi
+
     # Core dependencies for kiwiclient (package names vary by distro)
     case "$PKG_MANAGER" in
         apt)
@@ -232,8 +239,11 @@ install_system_dependencies() {
                 python3-scipy
                 python3-requests
                 sox
-                sox-plugins-freeworld
             )
+            # Add sox-plugins-freeworld only for standard Fedora (not Asahi)
+            if [[ "$IS_ASAHI" == "false" ]]; then
+                PACKAGES+=(sox-plugins-freeworld)
+            fi
             ;;
         pacman)
             PACKAGES=(
