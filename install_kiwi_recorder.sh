@@ -143,14 +143,28 @@ preflight_checks() {
 # ============================================================================
 
 detect_package_manager() {
-    if command -v apt-get &> /dev/null; then
+    # Check for distro-specific files first for more reliable detection
+    if [[ -f /etc/arch-release ]] || [[ -f /etc/asahi-release ]]; then
+        echo "pacman"
+    elif [[ -f /etc/debian_version ]]; then
         echo "apt"
+    elif [[ -f /etc/fedora-release ]]; then
+        echo "dnf"
+    elif [[ -f /etc/redhat-release ]] && command -v dnf &> /dev/null; then
+        echo "dnf"
+    elif [[ -f /etc/redhat-release ]] && command -v yum &> /dev/null; then
+        echo "yum"
+    elif [[ -f /etc/SuSE-release ]] || [[ -f /etc/SUSE-brand ]]; then
+        echo "zypper"
+    # Fallback to command detection
+    elif command -v apt-get &> /dev/null; then
+        echo "apt"
+    elif command -v pacman &> /dev/null; then
+        echo "pacman"
     elif command -v dnf &> /dev/null; then
         echo "dnf"
     elif command -v yum &> /dev/null; then
         echo "yum"
-    elif command -v pacman &> /dev/null; then
-        echo "pacman"
     elif command -v zypper &> /dev/null; then
         echo "zypper"
     else
