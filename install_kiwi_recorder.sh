@@ -26,8 +26,14 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Configuration
-INSTALL_USER="${SUDO_USER:-pi}"
-HOME_DIR="/home/${INSTALL_USER}"
+# Detect the actual user (works with or without sudo)
+if [[ -n "${SUDO_USER:-}" ]]; then
+    INSTALL_USER="$SUDO_USER"
+    HOME_DIR=$(eval echo ~$SUDO_USER)
+else
+    INSTALL_USER="$(whoami)"
+    HOME_DIR="$HOME"
+fi
 KIWI_CLIENT_DIR="${HOME_DIR}/kiwiclient"
 KIWI_CLIENT_REPO="https://github.com/jks-prv/kiwiclient.git"
 RECORDER_SCRIPT="${HOME_DIR}/kiwi_recorder.py"
@@ -64,9 +70,11 @@ log_error() {
 
 check_root() {
     if [[ $EUID -ne 0 ]]; then
-        log_error "This script must be run as root (use sudo)"
-        exit 1
+        log_warning "Not running as root - will skip system package installation"
+        log_warning "Make sure these are already installed: git, python3, sox, numpy, scipy"
+        return 1
     fi
+    return 0
 }
 
 confirm() {
@@ -87,6 +95,15 @@ confirm() {
     esac
 }
 
+run_as_user() {
+    # Run command as install user (use sudo -u if root, otherwise just run)
+    if [[ "$HAS_ROOT" == "true" ]]; then
+        sudo -u "$INSTALL_USER" "$@"
+    else
+        "$@"
+    fi
+}
+
 # ============================================================================
 # Pre-flight Checks
 # ============================================================================
@@ -94,7 +111,12 @@ confirm() {
 preflight_checks() {
     log_info "Running pre-flight checks..."
 
-    check_root
+    # Check if root (but don't fail if not)
+    if check_root; then
+        HAS_ROOT=true
+    else
+        HAS_ROOT=false
+    fi
 
     # Detect platform
     if [[ -f /proc/device-tree/model ]]; then
@@ -206,6 +228,26 @@ install_packages() {
 # ============================================================================
 
 install_system_dependencies() {
+    # Skip if not running as root
+    if [[ "$HAS_ROOT" != "true" ]]; then
+        log_info "Skipping system package installation (not running as root)"
+        log_info "Checking if required commands are available..."
+
+        local missing=()
+        command -v git &>/dev/null || missing+=("git")
+        command -v python3 &>/dev/null || missing+=("python3")
+        command -v sox &>/dev/null || missing+=("sox")
+
+        if [[ ${#missing[@]} -gt 0 ]]; then
+            log_warning "Missing system packages: ${missing[*]}"
+            log_warning "Please install them manually or re-run with sudo"
+        else
+            log_success "All required system commands found"
+        fi
+        echo
+        return 0
+    fi
+
     log_info "Installing system dependencies..."
 
     PKG_MANAGER=$(detect_package_manager)
@@ -298,7 +340,7 @@ install_kiwiclient() {
     fi
 
     log_info "Cloning KiwiSDR client repository..."
-    sudo -u "$INSTALL_USER" git clone "$KIWI_CLIENT_REPO" "$KIWI_CLIENT_DIR"
+    run_as_user git clone "$KIWI_CLIENT_REPO" "$KIWI_CLIENT_DIR"
 
     # Verify critical files exist
     if [[ ! -f "${KIWI_CLIENT_DIR}/kiwirecorder.py" ]]; then
@@ -372,7 +414,7 @@ create_directories() {
     for dir in "${DIRS[@]}"; do
         if [[ ! -d "$dir" ]]; then
             log_info "Creating: ${dir}"
-            sudo -u "$INSTALL_USER" mkdir -p "$dir"
+            run_as_user mkdir -p "$dir"
         else
             log_info "Already exists: ${dir}"
         fi
@@ -380,7 +422,7 @@ create_directories() {
 
     # Create log file with proper permissions
     if [[ ! -f "$LOG_FILE" ]]; then
-        sudo -u "$INSTALL_USER" touch "$LOG_FILE"
+        run_as_user touch "$LOG_FILE"
         log_success "Created log file: ${LOG_FILE}"
     fi
 
@@ -411,13 +453,17 @@ install_recorder_script() {
 
     # Copy script
     cp kiwi_recorder.py "$RECORDER_SCRIPT"
-    chown "$INSTALL_USER:$INSTALL_USER" "$RECORDER_SCRIPT"
+    if [[ "$HAS_ROOT" == "true" ]]; then
+        chown "$INSTALL_USER:$INSTALL_USER" "$RECORDER_SCRIPT"
+    fi
     chmod +x "$RECORDER_SCRIPT"
 
     # Copy requirements.txt
     if [[ -f "requirements.txt" ]]; then
         cp requirements.txt "$REQUIREMENTS"
-        chown "$INSTALL_USER:$INSTALL_USER" "$REQUIREMENTS"
+        if [[ "$HAS_ROOT" == "true" ]]; then
+            chown "$INSTALL_USER:$INSTALL_USER" "$REQUIREMENTS"
+        fi
         log_success "Copied requirements.txt"
     fi
 
@@ -462,7 +508,7 @@ verify_installation() {
 
     # Test recorder script
     log_info "Testing recorder script..."
-    if sudo -u "$INSTALL_USER" python3 "$RECORDER_SCRIPT" --help &>/dev/null; then
+    if run_as_user python3 "$RECORDER_SCRIPT" --help &>/dev/null; then
         log_success "  ✓ Recorder script runs successfully"
     else
         log_error "  ✗ Recorder script failed to run"
@@ -471,7 +517,7 @@ verify_installation() {
 
     # Test kiwiclient
     log_info "Testing KiwiSDR client..."
-    if sudo -u "$INSTALL_USER" python3 "${KIWI_CLIENT_DIR}/kiwirecorder.py" --help &>/dev/null; then
+    if run_as_user python3 "${KIWI_CLIENT_DIR}/kiwirecorder.py" --help &>/dev/null; then
         log_success "  ✓ KiwiSDR client runs successfully"
     else
         log_error "  ✗ KiwiSDR client failed to run"
@@ -501,16 +547,16 @@ show_next_steps() {
     echo "Next steps:"
     echo
     echo "1. Test the feed command (creates empty feed if no recordings):"
-    echo "   sudo -u ${INSTALL_USER} python3 ${RECORDER_SCRIPT} feed"
+    echo "   python3 ${RECORDER_SCRIPT} feed"
     echo
     echo "2. Run a scan to find the best KiwiSDR receivers (~1-2 minutes):"
-    echo "   sudo -u ${INSTALL_USER} python3 ${RECORDER_SCRIPT} scan"
+    echo "   python3 ${RECORDER_SCRIPT} scan"
     echo
     echo "3. Test a recording (13 minutes, requires scan to complete first):"
-    echo "   sudo -u ${INSTALL_USER} python3 ${RECORDER_SCRIPT} record"
+    echo "   python3 ${RECORDER_SCRIPT} record"
     echo
     echo "4. Set up automated cron jobs:"
-    echo "   sudo -u ${INSTALL_USER} python3 ${RECORDER_SCRIPT} setup"
+    echo "   python3 ${RECORDER_SCRIPT} setup"
     echo
     echo "============================================================================"
     echo "Installed components:"
@@ -523,7 +569,7 @@ show_next_steps() {
     echo
     echo "Documentation: ${HOME_DIR}/projects/recorder/CLAUDE.md"
     echo "View logs:     tail -f ${LOG_FILE}"
-    echo "Check cron:    sudo -u ${INSTALL_USER} crontab -l"
+    echo "Check cron:    crontab -l"
     echo
 }
 

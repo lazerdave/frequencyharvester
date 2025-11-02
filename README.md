@@ -26,12 +26,30 @@ Frequency Harvester automates the process of finding, recording, and archiving r
 git clone https://github.com/lazerdave/frequencyharvester.git
 cd frequencyharvester
 
-# Run the automated installer
-sudo bash install_kiwi_recorder.sh
+# Run the automated installer (sudo optional - see below)
+bash install_kiwi_recorder.sh
 ```
 
-The installer handles everything:
-- Auto-detects package manager (apt, dnf, yum, pacman, zypper)
+**Two Installation Modes:**
+
+1. **With sudo** (recommended for first-time setup):
+   ```bash
+   sudo bash install_kiwi_recorder.sh
+   ```
+   - Installs system packages (sox, numpy, scipy, etc.)
+   - Auto-detects package manager (apt, dnf, yum, pacman, zypper)
+   - Sets up everything automatically
+
+2. **Without sudo** (if system packages already installed):
+   ```bash
+   bash install_kiwi_recorder.sh
+   ```
+   - Checks for required dependencies
+   - Installs Python packages via pip --user
+   - Sets up user directories and scripts
+   - **No root access needed**
+
+The installer handles:
 - System dependencies (sox, numpy, scipy, requests)
 - KiwiSDR client software
 - Directory structure
