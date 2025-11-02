@@ -139,27 +139,117 @@ preflight_checks() {
 }
 
 # ============================================================================
+# Package Manager Detection
+# ============================================================================
+
+detect_package_manager() {
+    if command -v apt-get &> /dev/null; then
+        echo "apt"
+    elif command -v dnf &> /dev/null; then
+        echo "dnf"
+    elif command -v yum &> /dev/null; then
+        echo "yum"
+    elif command -v pacman &> /dev/null; then
+        echo "pacman"
+    elif command -v zypper &> /dev/null; then
+        echo "zypper"
+    else
+        echo "unknown"
+    fi
+}
+
+install_packages() {
+    local pkg_manager="$1"
+    shift
+    local packages=("$@")
+
+    case "$pkg_manager" in
+        apt)
+            apt-get update -qq
+            apt-get install -y "${packages[@]}"
+            ;;
+        dnf)
+            dnf install -y "${packages[@]}"
+            ;;
+        yum)
+            yum install -y "${packages[@]}"
+            ;;
+        pacman)
+            pacman -Sy --noconfirm "${packages[@]}"
+            ;;
+        zypper)
+            zypper install -y "${packages[@]}"
+            ;;
+        *)
+            log_error "Unsupported package manager"
+            return 1
+            ;;
+    esac
+}
+
+# ============================================================================
 # System Dependencies
 # ============================================================================
 
 install_system_dependencies() {
     log_info "Installing system dependencies..."
 
-    apt-get update -qq
+    PKG_MANAGER=$(detect_package_manager)
+    log_info "Detected package manager: ${PKG_MANAGER}"
 
-    # Core dependencies for kiwiclient
-    PACKAGES=(
-        git
-        python3-pip
-        python3-numpy
-        python3-scipy
-        python3-requests
-        sox
-        libsox-fmt-mp3
-    )
+    # Core dependencies for kiwiclient (package names vary by distro)
+    case "$PKG_MANAGER" in
+        apt)
+            PACKAGES=(
+                git
+                python3-pip
+                python3-numpy
+                python3-scipy
+                python3-requests
+                sox
+                libsox-fmt-mp3
+            )
+            ;;
+        dnf|yum)
+            PACKAGES=(
+                git
+                python3-pip
+                python3-numpy
+                python3-scipy
+                python3-requests
+                sox
+                sox-plugins-freeworld
+            )
+            ;;
+        pacman)
+            PACKAGES=(
+                git
+                python-pip
+                python-numpy
+                python-scipy
+                python-requests
+                sox
+            )
+            ;;
+        zypper)
+            PACKAGES=(
+                git
+                python3-pip
+                python3-numpy
+                python3-scipy
+                python3-requests
+                sox
+            )
+            ;;
+        *)
+            log_error "Unsupported package manager: ${PKG_MANAGER}"
+            log_error "Please install manually: git, python3, pip, numpy, scipy, requests, sox"
+            exit 1
+            ;;
+    esac
 
     log_info "Installing packages: ${PACKAGES[*]}"
-    apt-get install -y "${PACKAGES[@]}"
+    install_packages "$PKG_MANAGER" "${PACKAGES[@]}"
 
     log_success "System dependencies installed"
     echo
@@ -211,8 +301,11 @@ install_python_dependencies() {
         REQUESTS_VERSION=$(python3 -c "import requests; print(requests.__version__)")
         log_success "python3-requests already installed (version ${REQUESTS_VERSION})"
     else
-        log_warning "python3-requests not found, installing via apt..."
-        apt-get install -y python3-requests
+        log_warning "python3-requests not found, installing via pip..."
+        python3 -m pip install --user requests || {
+            log_error "Failed to install requests. Please install manually."
+            exit 1
+        }
     fi
 
     # Verify all required modules

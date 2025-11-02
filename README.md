@@ -31,6 +31,7 @@ sudo bash install_kiwi_recorder.sh
 ```
 
 The installer handles everything:
+- Auto-detects package manager (apt, dnf, yum, pacman, zypper)
 - System dependencies (sox, numpy, scipy, requests)
 - KiwiSDR client software
 - Directory structure
@@ -94,8 +95,9 @@ The scanner provides professional, at-a-glance signal analysis:
 ## Requirements
 
 - **Python:** 3.9 or higher
-- **Platform:** Linux (tested on Raspberry Pi, Asahi Linux on Apple Silicon, Debian, Ubuntu)
+- **Platform:** Linux (tested on Raspberry Pi, Asahi Linux on Apple Silicon, Debian, Ubuntu, Fedora)
 - **Architecture:** x86_64, ARM64, ARMv7 (platform-agnostic)
+- **Package Manager:** apt, dnf, yum, pacman, or zypper (auto-detected)
 - **Network:** Internet connection for KiwiSDR access
 - **Storage:** ~5GB recommended for recordings
 
