@@ -94,7 +94,8 @@ The scanner provides professional, at-a-glance signal analysis:
 ## Requirements
 
 - **Python:** 3.9 or higher
-- **Platform:** Raspberry Pi (or any Linux system)
+- **Platform:** Linux (tested on Raspberry Pi, Asahi Linux on Apple Silicon, Debian, Ubuntu)
+- **Architecture:** x86_64, ARM64, ARMv7 (platform-agnostic)
 - **Network:** Internet connection for KiwiSDR access
 - **Storage:** ~5GB recommended for recordings
 

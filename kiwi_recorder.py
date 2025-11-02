@@ -45,13 +45,14 @@ import requests
 class Config:
     """Centralized configuration for all KiwiSDR operations"""
 
-    # Paths
-    KIWI_REC_PATH = "/home/pi/kiwiclient/kiwirecorder.py"
-    OUT_DIR = "/home/pi/share/198k"
-    SCAN_DIR = "/home/pi/kiwi_scans"
-    SCAN_POINTER = "/home/pi/kiwi_scans/latest_scan_198.json"
-    LOG_FILE = "/home/pi/Shipping_Forecast_SDR_Recordings.log"
-    FEED_PATH = Path("/home/pi/share/198k/feed.xml")
+    # Paths (platform-agnostic using home directory)
+    HOME = Path.home()
+    KIWI_REC_PATH = str(HOME / "kiwiclient" / "kiwirecorder.py")
+    OUT_DIR = str(HOME / "share" / "198k")
+    SCAN_DIR = str(HOME / "kiwi_scans")
+    SCAN_POINTER = str(HOME / "kiwi_scans" / "latest_scan_198.json")
+    LOG_FILE = str(HOME / "Shipping_Forecast_SDR_Recordings.log")
+    FEED_PATH = HOME / "share" / "198k" / "feed.xml"
     ART_NAME = "artwork.jpg"
 
     # Recording settings

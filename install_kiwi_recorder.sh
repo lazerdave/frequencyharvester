@@ -96,13 +96,14 @@ preflight_checks() {
 
     check_root
 
-    # Check if running on Raspberry Pi
-    if [[ ! -f /proc/device-tree/model ]] || ! grep -q "Raspberry Pi" /proc/device-tree/model 2>/dev/null; then
-        log_warning "This doesn't appear to be a Raspberry Pi"
-        if ! confirm "Continue anyway?"; then
-            log_error "Installation cancelled"
-            exit 1
-        fi
+    # Detect platform
+    if [[ -f /proc/device-tree/model ]]; then
+        PLATFORM=$(cat /proc/device-tree/model 2>/dev/null | tr -d '\0')
+        log_info "Platform: ${PLATFORM}"
+    else
+        PLATFORM=$(uname -m)
+        OS_NAME=$(uname -s)
+        log_info "Platform: ${OS_NAME} on ${PLATFORM}"
     fi
 
     # Check Python version
