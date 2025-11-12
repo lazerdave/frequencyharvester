@@ -24,6 +24,7 @@ import os
 import pathlib
 import random
 import re
+import socket
 import statistics
 import subprocess
 import sys
@@ -35,7 +36,9 @@ from typing import Optional, Tuple, Dict, List, Any
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
+import numpy as np
 import requests
+import wave
 
 
 # ============================================================================
@@ -58,7 +61,7 @@ class Config:
     # Recording settings
     FREQ_KHZ = "198"
     MODE = "am"
-    DURATION_SEC = 13 * 60  # 13 minutes
+    DURATION_SEC = 15 * 60  # 15 minutes (captures full forecast + anthem + handoff)
 
     # Scanning settings
     PROBE_SEC = 8
@@ -79,8 +82,11 @@ class Config:
     FEED_TITLE = "198 kHz Shipping Forecast"
     FEED_DESC = "Automated 198 kHz Shipping Forecast recordings via KiwiSDR."
     FEED_LANG = "en-gb"
-    FEED_AUTHOR = "KiwiSDR capture on cherrypi"
-    BASE_URL = "http://cherrypi.local/198k"
+
+    # Configurable via environment variables
+    HOSTNAME = socket.gethostname()
+    FEED_AUTHOR = os.getenv("FEED_AUTHOR", f"KiwiSDR capture on {HOSTNAME}")
+    BASE_URL = os.getenv("BASE_URL", f"http://{HOSTNAME}.local/198k")
 
     # Fallback receiver
     FALLBACK_HOST = "norfolk.george-smart.co.uk"
@@ -135,6 +141,9 @@ FILENAME_PATTERN = re.compile(
     r"ShippingFCST-(\d{6})_(AM|PM)_(\d{6})UTC--(.+?)--avg-(\d+)\.[^\.]+$",
     re.IGNORECASE
 )
+
+# Met Office Shipping Forecast URL
+METOFFICE_FORECAST_URL = "https://weather.metoffice.gov.uk/specialist-forecasts/coast-and-sea/print/shipping-forecast"
 
 
 def setup_logging(log_file: Optional[str] = None) -> logging.Logger:
@@ -274,6 +283,185 @@ def now_parts_with_ampm() -> Tuple[str, str, str]:
 def ensure_dir(path: str) -> None:
     """Ensure directory exists"""
     os.makedirs(path, exist_ok=True)
+
+
+def fetch_shipping_forecast(logger: logging.Logger) -> Optional[str]:
+    """
+    Fetch the current Shipping Forecast from Met Office
+
+    Returns:
+        HTML content of the forecast, or None if fetch fails
+    """
+    try:
+        logger.info(f"Fetching shipping forecast from {METOFFICE_FORECAST_URL}")
+        response = requests.get(
+            METOFFICE_FORECAST_URL,
+            timeout=Config.DISCOVERY_TIMEOUT,
+            headers={"User-Agent": "KiwiSDR-Recorder/1.0"}
+        )
+        response.raise_for_status()
+
+        # Extract the body content (everything between <body> and </body>)
+        content = response.text
+        body_start = content.find('<body')
+        body_end = content.find('</body>')
+
+        if body_start != -1 and body_end != -1:
+            # Find the end of the opening <body> tag
+            body_start = content.find('>', body_start) + 1
+            forecast_html = content[body_start:body_end].strip()
+            logger.info(f"Successfully fetched shipping forecast ({len(forecast_html)} chars)")
+            return forecast_html
+        else:
+            logger.warning("Could not find <body> tags in forecast page")
+            return content  # Return full content as fallback
+
+    except requests.Timeout:
+        logger.warning(f"Timeout fetching shipping forecast after {Config.DISCOVERY_TIMEOUT}s")
+        return None
+    except requests.RequestException as e:
+        logger.warning(f"Failed to fetch shipping forecast: {e}")
+        return None
+    except Exception as e:
+        logger.warning(f"Unexpected error fetching shipping forecast: {e}")
+        return None
+
+
+def detect_anthem_start(wav_path: str, logger: logging.Logger) -> Optional[Tuple[float, int]]:
+    """
+    Detect where the national anthem starts by finding sustained silence
+    Scans from 10 minutes onwards (or 75% through file, whichever is earlier)
+    to avoid false positives while handling variable forecast lengths
+    Adds 1 second offset to the detection point
+
+    Returns:
+        Tuple of (time_in_seconds, sample_index) or None if not found
+    """
+    try:
+        with wave.open(wav_path, 'r') as wav:
+            frames = wav.readframes(wav.getnframes())
+            sample_rate = wav.getframerate()
+            samples = np.frombuffer(frames, dtype=np.int16)
+
+            total_duration = len(samples) / sample_rate
+
+            # Start scanning from 10 minutes OR 75% through, whichever is earlier
+            # This handles variable forecast lengths
+            start_time = min(10 * 60, total_duration * 0.75)
+
+            window_size = int(sample_rate * 0.5)  # 0.5 second windows
+            start_sample = int(start_time * sample_rate)
+
+            consecutive_low = 0
+
+            for i in range(start_sample, len(samples), window_size):
+                window = samples[i:i+window_size]
+                if len(window) > 0:
+                    rms = np.sqrt(np.mean(window.astype(np.float32)**2))
+
+                    if rms < 250:  # Silence threshold (raised to catch quieter "good night" pauses)
+                        consecutive_low += 1
+                        if consecutive_low >= 2:  # Sustained silence (at least 1 second)
+                            # Add 1 second offset
+                            adjusted_sample = i + sample_rate
+                            adjusted_time = adjusted_sample / sample_rate
+                            logger.info(f"Anthem detected at {int(adjusted_time // 60)}:{int(adjusted_time % 60):02d}")
+                            return adjusted_time, adjusted_sample
+                    else:
+                        consecutive_low = 0
+
+            logger.warning("No anthem start point detected")
+            return None
+    except Exception as e:
+        logger.warning(f"Error detecting anthem: {e}")
+        return None
+
+
+def process_recording(
+    wav_path: str,
+    fade_duration: float,
+    logger: logging.Logger,
+    insert_test_beep: bool = True
+) -> Optional[str]:
+    """
+    Process a recording by detecting the anthem and fading out
+
+    Args:
+        wav_path: Path to the WAV file to process
+        fade_duration: Duration of fade in seconds
+        logger: Logger instance
+        insert_test_beep: If True, insert a test tone at the cut point
+
+    Returns:
+        Path to processed file, or None if processing failed
+    """
+    try:
+        # Detect where to cut
+        result = detect_anthem_start(wav_path, logger)
+        if not result:
+            logger.warning("Skipping post-processing - no anthem detected")
+            return None
+
+        cut_time, cut_sample = result
+
+        with wave.open(wav_path, 'r') as wav_in:
+            params = wav_in.getparams()
+            frames = wav_in.readframes(wav_in.getnframes())
+            sample_rate = wav_in.getframerate()
+            samples = np.frombuffer(frames, dtype=np.int16).copy()
+
+            # Insert test beep if requested
+            if insert_test_beep:
+                tone_duration = 0.125
+                tone_freq = 1000
+                tone_samples = int(tone_duration * sample_rate)
+
+                # Create sine wave
+                t = np.arange(tone_samples) / sample_rate
+                tone = np.sin(2 * np.pi * tone_freq * t)
+
+                # Scale to 12.5% volume
+                tone = (tone * 4096).astype(np.int16)
+
+                # Insert tone
+                tone_end = cut_sample + tone_samples
+                if tone_end < len(samples):
+                    samples[cut_sample:tone_end] = tone
+                    fade_start = tone_end
+                else:
+                    fade_start = cut_sample
+            else:
+                fade_start = cut_sample
+
+            # Apply fade
+            fade_samples = int(fade_duration * sample_rate)
+            fade_end = fade_start + fade_samples
+
+            for i in range(fade_start, min(fade_end, len(samples))):
+                fade_factor = 1.0 - ((i - fade_start) / fade_samples)
+                samples[i] = int(samples[i] * fade_factor)
+
+            # Truncate after fade
+            samples = samples[:fade_end]
+
+            # Write processed file
+            processed_path = wav_path.replace('.wav', '_processed.wav')
+            with wave.open(processed_path, 'w') as wav_out:
+                wav_out.setparams(params)
+                wav_out.writeframes(samples.tobytes())
+
+            output_duration = len(samples) / sample_rate
+            logger.info(f"Processed: {processed_path}")
+            logger.info(f"  Original duration: 13:00")
+            logger.info(f"  Processed duration: {int(output_duration // 60)}:{int(output_duration % 60):02d}")
+            logger.info(f"  Cut at: {int(cut_time // 60)}:{int(cut_time % 60):02d}")
+            logger.info(f"  Fade: {fade_duration}s")
+
+            return processed_path
+
+    except Exception as e:
+        logger.error(f"Post-processing failed: {e}")
+        return None
 
 
 # ============================================================================
@@ -594,9 +782,10 @@ def write_sidecar(
     port: int,
     rssi_label: float,
     ampm: str,
-    logger: logging.Logger
+    logger: logging.Logger,
+    forecast_html: Optional[str] = None
 ) -> str:
-    """Write sidecar text file with recording metadata"""
+    """Write sidecar text file with recording metadata and shipping forecast"""
     txt = path_wav.replace(".wav", ".txt")
     now_utc = datetime.now(timezone.utc)
     now_lon = now_utc.astimezone(ZoneInfo("Europe/London"))
@@ -615,6 +804,13 @@ def write_sidecar(
         f"  Receiver host: {host}:{port}\n"
         "Use non-commercially and credit the receiver operator where possible.\n"
     )
+
+    # Add shipping forecast if available
+    if forecast_html:
+        body += "\n\n" + "="*70 + "\n"
+        body += "SHIPPING FORECAST (Met Office)\n"
+        body += "="*70 + "\n\n"
+        body += forecast_html
 
     with open(txt, "w", encoding="utf-8") as f:
         f.write(body)
@@ -685,6 +881,13 @@ def cmd_record(args, logger: logging.Logger) -> int:
 
     logger.info(f"Chosen site: {host}:{port} (scan avg: {scan_avg})")
 
+    # Fetch shipping forecast (don't block recording if it fails)
+    forecast_html = fetch_shipping_forecast(logger)
+    if forecast_html:
+        logger.info("Shipping forecast fetched successfully")
+    else:
+        logger.warning("Recording will proceed without shipping forecast")
+
     # Get fresh RSSI reading
     fresh_vals, err = probe_smeter(host, port, Config.RSSI_REFRESH_SEC, logger)
     fresh = statistics.mean(fresh_vals) if fresh_vals else None
@@ -703,12 +906,28 @@ def cmd_record(args, logger: logging.Logger) -> int:
     # Record
     try:
         wav_path = record_audio(host, port, out_base, logger)
-        write_sidecar(wav_path, host, port, rssi_for_label, ampm, logger)
+        write_sidecar(wav_path, host, port, rssi_for_label, ampm, logger, forecast_html)
         update_latest_symlink(wav_path, logger)
         logger.info(f"Saved: {wav_path}")
     except Exception as e:
         logger.error(f"Recording failed: {e}")
         return 1
+
+    # Post-process recording (fade out anthem)
+    try:
+        logger.info("[post-process] Detecting and fading out anthem...")
+        processed_path = process_recording(
+            wav_path,
+            fade_duration=3.0,
+            logger=logger,
+            insert_test_beep=False
+        )
+        if processed_path:
+            logger.info(f"[post-process] Created {processed_path}")
+        else:
+            logger.warning("[post-process] Processing skipped or failed")
+    except Exception as e:
+        logger.warning(f"[post-process] Failed: {e}")
 
     # Rebuild feed
     try:

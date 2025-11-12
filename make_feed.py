@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-import os, time, email.utils, html, sys, re
+import os, time, email.utils, html, sys, re, socket
 from urllib.parse import quote
 from pathlib import Path
 
 # --- CONFIG ---
 BASE_DIR = Path("/home/pi/share/198k")      # where your audio files live
-BASE_URL = "http://cherrypi.local/198k"     # how your iPhone reaches them
 FEED_PATH = BASE_DIR / "feed.xml"
 ART_NAME  = "artwork.jpg"
 ART_PATH  = BASE_DIR / ART_NAME
@@ -15,7 +14,11 @@ AUDIO_EXTS = (".mp3", ".wav", ".m4a")       # prefer mp3 first
 TITLE  = "198 kHz Shipping Forecast"
 DESC   = "Automated 198 kHz Shipping Forecast recordings via KiwiSDR."
 LANG   = "en-gb"
-AUTHOR = "KiwiSDR capture on cherrypi"
+
+# Configurable via environment variables
+HOSTNAME = socket.gethostname()
+AUTHOR = os.getenv("FEED_AUTHOR", f"KiwiSDR capture on {HOSTNAME}")
+BASE_URL = os.getenv("BASE_URL", f"http://{HOSTNAME}.local/198k")
 
 # --- HELPERS ---
 def rfc2822(t): return email.utils.formatdate(t, usegmt=True)
